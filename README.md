@@ -1,2 +1,258 @@
-# bucketbuster
-Storage Bucket OSINT Tool
+# BucketBuster
+
+Cloud object-storage exposure scanner for authorized security testing, bug
+bounty work, and infrastructure you own.
+
+BucketBuster checks candidate bucket names against public endpoints for
+Yandex Cloud, VK Cloud, Selectel, SberCloud, Alibaba OSS, Tencent COS,
+Huawei OBS, and Baidu BOS. It can identify publicly listable buckets, match
+certificate-related object names, and optionally download publicly accessible
+objects over HTTP GET.
+
+> **Authorization required:** Use this tool only against assets you own or
+> have explicit permission to test. Scanning or downloading data from
+> third-party buckets may be illegal. You are responsible for complying with
+> applicable laws, contracts, bug-bounty rules, and provider policies.
+
+## Features
+
+- Probes virtual-hosted and path-style endpoints for supported providers.
+- Optional passive DNS resolution before HTTP probing.
+- Parallel scanning with configurable worker count and request delay.
+- Filters by extension, name/path pattern, regular expression, or built-in
+	certificate indicators.
+- Streams findings to JSON and CSV reports.
+- Optionally downloads objects from public listings without credentials.
+- Validates bucket hostnames, supports IDNA/Punycode names, and limits each
+	download to 25 MiB.
+- Blocks private-key containers by default.
+
+## Requirements
+
+- Python 3.9 or newer recommended.
+- Network access to the endpoints being tested.
+- A wordlist containing candidate bucket names, one per line.
+
+## Installation
+
+```bash
+git clone <repository-url>
+cd bucketbuster
+python -m venv .venv
+```
+
+Activate the virtual environment:
+
+```bash
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+## Quick Start
+
+Create a wordlist such as `buckets.txt`:
+
+```text
+example-company
+example-company-backup
+example-company-documents
+```
+
+Run the default provider set, Yandex Cloud and VK Cloud:
+
+```bash
+python bucketbuster.py --wordlist buckets.txt
+```
+
+The scanner reports HTTP 200 responses, public listings, matching object
+names, and access-denied endpoints that appear to exist. A 404 response is
+ignored.
+
+## Provider Coverage
+
+| Provider flag | Service | Included endpoint families |
+| --- | --- | --- |
+| `yandex` | Yandex Cloud | Storage and website endpoints |
+| `vk` | VK Cloud | `vkcloud-storage.ru` endpoints |
+| `selectel` | Selectel | S3 and `selstorage.ru` endpoints |
+| `sber` | SberCloud | OBS and `s3.cloud.ru` endpoints |
+| `aliyun` | Alibaba Cloud OSS | Selected China regions |
+| `tencent` | Tencent Cloud COS | Selected China and Asia regions |
+| `huawei` | Huawei Cloud OBS | Selected China regions |
+| `baidu` | Baidu Cloud BOS | Selected China and Asia regions |
+
+Provider groups:
+
+```bash
+--providers russia   # yandex, vk, selectel, sber
+--providers china    # aliyun, tencent, huawei, baidu
+--providers all      # every supported provider
+```
+
+You can also provide a comma-separated list, for example:
+
+```bash
+python bucketbuster.py -w buckets.txt --providers aliyun,tencent
+```
+
+## Command-Line Options
+
+### Input and probing
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-w`, `--wordlist PATH` | Required | File containing candidate bucket names, one per line. Blank lines and comments beginning with `#` are ignored. |
+| `--providers VALUE` | `yandex,vk` | Comma-separated provider flags, or `all`, `russia`, or `china`. |
+| `--dns` | Disabled | Perform a passive DNS check and skip hostnames that do not resolve. |
+| `-t`, `--threads N` | `12` | Number of concurrent bucket workers. |
+| `--delay SECONDS` | `0.12` | Delay between HTTP requests. |
+
+### Matching and filtering
+
+| Option | Description |
+| --- | --- |
+| `--match-ext LIST` | Comma-separated extensions such as `.pfx,.p12,.cer,.crt`. A leading dot is added when omitted. |
+| `--match-name LIST` | Comma-separated case-insensitive name/path substrings. A simple `*` wildcard is supported. |
+| `--match-regex PATTERN` | Case-insensitive regular expression matched against the full object key. Pass the option multiple times for multiple patterns. |
+| `--match-cert` | Enable the built-in certificate extensions and keywords, including CryptoPro, GOST, signing, certificate, and Russian certificate terms. |
+
+When one or more filters are supplied, they use OR logic: an object matches
+if it satisfies any configured extension, name, regex, or `--match-cert`
+condition. With no filters, every listed object is considered a match for
+reporting and download selection.
+
+### Reports
+
+| Option | Description |
+| --- | --- |
+| `-o`, `--output PATH` | Write a JSON report. Results are streamed during scanning. |
+| `--csv PATH` | Write a CSV report. Results are streamed during scanning. |
+
+### Downloads
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--download` | Disabled | Download matching objects from public listings using unauthenticated HTTP GET requests. |
+| `--download-all` | Disabled | With `--download`, attempt every object in each parsed public listing and ignore matching filters. |
+| `--download-dir PATH` | `./downloads` | Root directory for downloaded objects. |
+| `--allow-private-keys` | Disabled | Permit downloads of `.pfx`, `.p12`, `.key`, `.p8`, and `.pem` objects. Use only when explicitly authorized. |
+
+`--download-all` requires `--download`. Downloads are limited to 25 MiB per
+object, and empty responses or non-200 responses are not saved. Private-key
+containers are blocked unless `--allow-private-keys` is explicitly supplied.
+
+## Examples
+
+Scan Russia/CIS providers with passive DNS checks:
+
+```bash
+python bucketbuster.py -w buckets.txt --providers russia --dns
+```
+
+Scan all supported providers and write both report formats:
+
+```bash
+python bucketbuster.py \
+	--wordlist buckets.txt \
+	--providers all \
+	--dns \
+	--output findings.json \
+	--csv findings.csv
+```
+
+Report likely certificate files by extension:
+
+```bash
+python bucketbuster.py -w buckets.txt --match-ext .pfx,.p12,.cer,.crt,.der
+```
+
+Match names and paths using substrings and simple wildcards:
+
+```bash
+python bucketbuster.py \
+	-w buckets.txt \
+	--match-name cryptopro,*keystore*,backups/*.sql
+```
+
+Use multiple regular expressions:
+
+```bash
+python bucketbuster.py \
+	-w buckets.txt \
+	--match-regex '.*backup.*\.sql$' \
+	--match-regex 'config/.*\.ya?ml$'
+```
+
+Enable the built-in certificate-related extension and keyword list:
+
+```bash
+python bucketbuster.py -w buckets.txt --match-cert
+```
+
+Download only objects matching selected extensions:
+
+```bash
+python bucketbuster.py \
+	-w buckets.txt \
+	--providers aliyun,tencent \
+	--match-ext .cer,.crt,.p7b \
+	--download \
+	--download-dir ./authorized-downloads
+```
+
+Download every object visible in a public listing. This intentionally ignores
+all matching filters and should be used only on an approved test asset:
+
+```bash
+python bucketbuster.py -w buckets.txt --download --download-all
+```
+
+## Input and Output
+
+Candidate input may be a bare bucket name, hostname, full storage URL, or
+path-style URL. Names are normalized and validated before any DNS or HTTP
+operation. Duplicate and invalid candidates are discarded.
+
+JSON findings include provider, bucket, URL, HTTP status, listability, matched
+files, all files discovered in a listing, DNS state, notes, a short listing
+snippet, and downloaded local paths. CSV contains the main finding fields;
+file lists are serialized as semicolon-separated values.
+
+Downloads are organized below the selected directory by provider and bucket:
+
+```text
+downloads/
+	yandex/
+		example-company/
+			certificates/client.cer
+```
+
+Object paths are sanitized before being written locally. Downloading is
+sequential and rate-limited by the configured delay.
+
+## Safety and Responsible Use
+
+- This tool does not authenticate to cloud providers or bypass access
+	controls.
+- Public listing and object access may still expose sensitive information;
+	treat findings as confidential and follow the authorization scope.
+- The default scan can make requests to many provider endpoints. Set a
+	conservative `--threads` value and increase `--delay` when required by a
+	program or provider policy.
+- Do not use `--download`, `--download-all`, or `--allow-private-keys` unless
+	the authorization explicitly covers the relevant objects and data handling.
+- Stop testing and notify the asset owner according to the applicable
+	disclosure process when sensitive material is found.
+
+## License
+
+BucketBuster is released under the [BSD 2-Clause License](LICENSE).
